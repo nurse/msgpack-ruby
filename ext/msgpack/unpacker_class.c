@@ -191,6 +191,61 @@ static VALUE Unpacker_skip_nil(VALUE self)
     return Qfalse;
 }
 
+static VALUE Unpacker_dig(VALUE self)
+{
+    UNPACKER(self, uk);
+
+#if 0
+int msgpack_unpacker_read_map_header(msgpack_unpacker_t* uk, uint32_t* result_size)
+int msgpack_unpacker_read_array_header(msgpack_unpacker_t* uk, uint32_t* result_size)
+int msgpack_unpacker_read(msgpack_unpacker_t* uk, size_t target_stack_depth)
+int msgpack_unpacker_skip(msgpack_unpacker_t* uk, size_t target_stack_depth)
+int msgpack_unpacker_peek_next_object_type(msgpack_unpacker_t* uk)
+#endif
+    for (;;) {
+	uint32_t result_size;
+	int r = msgpack_unpacker_peek_next_object_type(uk);
+	if(r < 0) {
+	    raise_unpacker_error(r);
+	}
+
+	switch((enum msgpack_unpacker_object_type) r) {
+	  case TYPE_NIL:
+	    fprintf(stderr,"%s:%d: nil\n",__func__,__LINE__);
+	    msgpack_unpacker_skip(uk, 0);
+	    break;
+	  case TYPE_BOOLEAN:
+	    fprintf(stderr,"%s:%d: boolean\n",__func__,__LINE__);
+	    msgpack_unpacker_skip(uk, 0);
+	    break;
+	  case TYPE_INTEGER:
+	    fprintf(stderr,"%s:%d: integer\n",__func__,__LINE__);
+	    msgpack_unpacker_skip(uk, 0);
+	    break;
+	  case TYPE_FLOAT:
+	    fprintf(stderr,"%s:%d: float\n",__func__,__LINE__);
+	    msgpack_unpacker_skip(uk, 0);
+	    break;
+	  case TYPE_RAW:
+	    fprintf(stderr,"%s:%d: raw\n",__func__,__LINE__);
+	    msgpack_unpacker_skip(uk, 0);
+	    break;
+	  case TYPE_ARRAY:
+	    msgpack_unpacker_read_array_header(uk, &result_size);
+	    fprintf(stderr,"%s:%d: array[%d]\n",__func__,__LINE__,result_size);
+	    break;
+	  case TYPE_MAP:
+	    msgpack_unpacker_read_map_header(uk, &result_size);
+	    fprintf(stderr,"%s:%d: map[%d]\n",__func__,__LINE__,result_size);
+	    break;
+	  default:
+	    rb_raise(eUnpackError, "logically unknown type %d", r);
+	}
+    }
+
+    return Qnil;
+}
+
 static VALUE Unpacker_read_array_header(VALUE self)
 {
     UNPACKER(self, uk);
@@ -474,6 +529,7 @@ void MessagePack_Unpacker_module_init(VALUE mMessagePack)
     rb_define_alias(cMessagePack_Unpacker, "unpack", "read");
     rb_define_method(cMessagePack_Unpacker, "skip", Unpacker_skip, 0);
     rb_define_method(cMessagePack_Unpacker, "skip_nil", Unpacker_skip_nil, 0);
+    rb_define_method(cMessagePack_Unpacker, "dig", Unpacker_dig, 0);
     rb_define_method(cMessagePack_Unpacker, "read_array_header", Unpacker_read_array_header, 0);
     rb_define_method(cMessagePack_Unpacker, "read_map_header", Unpacker_read_map_header, 0);
     //rb_define_method(cMessagePack_Unpacker, "peek_next_type", Unpacker_peek_next_type, 0);  // TODO

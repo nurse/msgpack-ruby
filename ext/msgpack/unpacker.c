@@ -874,3 +874,212 @@ int msgpack_unpacker_skip_nil(msgpack_unpacker_t* uk)
     return 0;
 }
 
+struct msgpack_unpacker_cursor_t {
+    msgpack_unpacker_t* uk;
+    msgpack_buffer_chunk_t chunk;
+};
+typedef struct msgpack_unpacker_cursor_t msgpack_unpacker_cursor_t;
+
+void cursor_init(msgpack_unpacker_cursor_t* cur, msgpack_unpacker_t* uk)
+{
+    cur->uk = uk;
+    cur->chunk.first = uk->buffer.head->first;
+    cur->chunk.last = uk->buffer.head->last;
+    cur->chunk.next = uk->buffer.head->next;
+}
+
+bool cursor_avail_p(msgpack_unpacker_cursor_t* cur, size_t n)
+{
+    msgpack_buffer_chunk_t* c = &cur->chunk;
+    do {
+	ptrdiff_t avail = c->last - c->first;
+	if (avail >= n) return true;
+	n -= avail;
+	c = c->next;
+    } while (c);
+    return false;
+}
+
+void cursor_chunk_set(msgpack_unpacker_cursor_t* cur, msgpack_buffer_chunk_t* chunk)
+{
+    cur->chunk.first = chunk->first;
+    cur->chunk.last = chunk->last;
+    cur->chunk.next = chunk->next;
+}
+
+int cursor_buffer_shift(msgpack_unpacker_cursor_t* cur)
+{
+    msgpack_buffer_chunk_t* next = cur->chunk.next;
+    if (!next) return PRIMITIVE_EOF;
+    cursor_chunk_set(cur, next);
+    return 0;
+}
+
+int msgpack_unpacker_cursor_next(msgpack_unpacker_cursor_t* cur)
+{
+    if (++cur->chunk.first < cur->chunk.last) return 0;
+    return cursor_buffer_shift(cur);
+}
+
+int msgpack_unpacker_cursor_peek(msgpack_unpacker_cursor_t* cur, unsigned char* buf, size_t n)
+{
+    msgpack_buffer_chunk_t* c = &cur->chunk;
+    do {
+	ptrdiff_t avail = c->last - c->first;
+	if (avail >= n) {
+	    memcpy(buf, c->first, n);
+	    return 0;
+	}
+	memcpy(buf, c->first, avail);
+	buf += avail;
+	n -= avail;
+    } while ((c = c->next));
+    return PRIMITIVE_EOF;
+}
+
+int msgpack_unpacker_cursor_read(msgpack_unpacker_cursor_t* cur, char* buf, size_t n)
+{
+    msgpack_buffer_chunk_t* c = &cur->chunk;
+    do {
+	ptrdiff_t avail = c->last - c->first;
+	if (avail >= n) {
+	    memcpy(buf, c->first, n);
+	    cur->chunk.first = c->first + n;
+	    if (&cur->chunk != c) {
+		cur->chunk.last = c->last;
+		cur->chunk.next = c->next;
+	    }
+	    return 0;
+	}
+	memcpy(buf, c->first, avail);
+	buf += avail;
+	n -= avail;
+    } while ((c = c->next));
+    return PRIMITIVE_EOF;
+}
+
+int msgpack_unpacker_cursor_peek_next_object_type(msgpack_unpacker_cursor_t* cur)
+{
+    unsigned char b;
+    int r = msgpack_unpacker_cursor_peek(cur, &b, 1);
+    if (r) return PRIMITIVE_EOF;
+
+    switch (b >> 4) {
+      case 0x0: case 0x1: case 0x2: case 0x3:
+      case 0x4: case 0x5: case 0x6: case 0x7:  // Positive Fixnum
+      case 0xe: case 0xf:  // Negative Fixnum
+        return TYPE_INTEGER;
+
+      case 0x8:  // FixMap
+        return TYPE_MAP;
+
+      case 0x9:  // FixArray
+        return TYPE_ARRAY;
+
+      case 0xa: case 0xb:  // FixRaw
+        return TYPE_RAW;
+    }
+
+    switch(b) {
+      case 0xc0:  // nil
+	return TYPE_NIL;
+
+      case 0xc2:  // false
+      case 0xc3:  // true
+	return TYPE_BOOLEAN;
+
+      case 0xca:  // float
+      case 0xcb:  // double
+	return TYPE_FLOAT;
+
+      case 0xcc:  // unsigned int  8
+      case 0xcd:  // unsigned int 16
+      case 0xce:  // unsigned int 32
+      case 0xcf:  // unsigned int 64
+	return TYPE_INTEGER;
+
+      case 0xd0:  // signed int  8
+      case 0xd1:  // signed int 16
+      case 0xd2:  // signed int 32
+      case 0xd3:  // signed int 64
+	return TYPE_INTEGER;
+
+      case 0xd9:  // raw 8 / str 8
+      case 0xda:  // raw 16 / str 16
+      case 0xdb:  // raw 32 / str 32
+	return TYPE_RAW;
+
+      case 0xc4:  // bin 8
+      case 0xc5:  // bin 16
+      case 0xc6:  // bin 32
+	return TYPE_RAW;
+
+      case 0xdc:  // array 16
+      case 0xdd:  // array 32
+	return TYPE_ARRAY;
+
+      case 0xde:  // map 16
+      case 0xdf:  // map 32
+	return TYPE_MAP;
+
+      default:
+	return PRIMITIVE_INVALID_BYTE;
+    }
+}
+
+int msgpack_unpacker_cursor_read_map_header(msgpack_unpacker_cursor_t* cur, uint32_t* result_size)
+{
+    unsigned char b;
+    union msgpack_buffer_cast_block_t cb;
+    int r = msgpack_unpacker_cursor_read(cur, (char*)&b, 1);
+    if (r) return r;
+
+    if(0x80 <= b && b <= 0x8f) {
+        *result_size = b & 0x0f;
+    } else if(b == 0xde) {
+	/* map 16 */
+	if (msgpack_unpacker_cursor_read(cur, cb.buffer, 2)) return PRIMITIVE_EOF;
+        *result_size = _msgpack_be16(cb.u16);
+    } else if(b == 0xdf) {
+        /* map 32 */
+	if (msgpack_unpacker_cursor_read(cur, cb.buffer, 4)) return PRIMITIVE_EOF;
+        *result_size = _msgpack_be32(cb.u32);
+    } else {
+        return PRIMITIVE_UNEXPECTED_TYPE;
+    }
+    return 0;
+}
+
+static int get_type(VALUE v)
+{
+    switch(rb_type(v)) {
+    case T_NIL: return TYPE_NIL;
+    case T_TRUE: return TYPE_BOOLEAN;
+    case T_FALSE: return TYPE_BOOLEAN;
+    case T_FIXNUM: return TYPE_INTEGER;
+    case T_SYMBOL: return TYPE_RAW;
+    case T_STRING: return TYPE_RAW;
+    case T_ARRAY: return TYPE_ARRAY;
+    case T_HASH: return TYPE_MAP;
+    case T_BIGNUM: return TYPE_INTEGER;
+    case T_FLOAT: return TYPE_FLOAT;
+    default: return -1;
+    }
+}
+
+int msgpack_unpacker_cursor_map_seek_value_at(msgpack_unpacker_cursor_t* cur, VALUE v)
+{
+    uint32_t result_size;
+    int r = msgpack_unpacker_cursor_read_map_header(cur, &result_size);
+    if (r) return r;
+
+    int type = get_type(v);
+    while (result_size--) {
+	int t = msgpack_unpacker_cursor_peek_next_object_type(cur);
+	if (t != type) {
+	    msgpack_unpacker_cursor_next(cur);
+	    msgpack_unpacker_cursor_next(cur);
+	}
+    }
+    return 0;
+}
