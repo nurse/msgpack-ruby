@@ -1265,36 +1265,36 @@ int msgpack_unpacker_cursor_map_find_fixnum(msgpack_unpacker_cursor_t* cur, size
         union msgpack_buffer_cast_block_t cb;
         switch(b) {
           case 0xca:  // float
-            r = msgpack_unpacker_cursor_read(cur, (char*)&b, 4);
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 4);
             if (r) return r;
-            if (b.f == num) return 0;
+            if (cb.f == num) return 0;
             goto skip_value;
 
           case 0xcb:  // double
-            r = msgpack_unpacker_cursor_read(cur, (char*)&b, 8);
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 8);
             if (r) return r;
-            if (b.d == num) return 0;
+            if (cb.d == num) return 0;
             goto skip_value;
 
           case 0xcc:  // unsigned int  8
-            r = msgpack_unpacker_cursor_read(cur, (char*)&b, 1);
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 1);
             if (r) return r;
-            if (b.u8 == num) return 0;
+            if (cb.u8 == num) return 0;
             goto skip_value;
           case 0xcd:  // unsigned int 16
-            r = msgpack_unpacker_cursor_read(cur, (char*)&b, 2);
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 2);
             if (r) return r;
-            if (b.u16 == num) return 0;
+            if (cb.u16 == num) return 0;
             goto skip_value;
           case 0xce:  // unsigned int 32
-            r = msgpack_unpacker_cursor_read(cur, (char*)&b, 4);
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 4);
             if (r) return r;
-            if (b.u32 == num) return 0;
+            if (cb.u32 == num) return 0;
             goto skip_value;
           case 0xcf:  // unsigned int 64
-            r = msgpack_unpacker_cursor_read(cur, (char*)&b, 8);
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 8);
             if (r) return r;
-            if (b.u64 == num) return 0;
+            if (cb.u64 == num) return 0;
             goto skip_value;
 
           case 0xd0:  // signed int  8
