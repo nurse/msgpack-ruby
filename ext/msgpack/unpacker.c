@@ -1376,17 +1376,6 @@ int msgpack_unpacker_cursor_map_find_float(msgpack_unpacker_cursor_t* cur, size_
         int r = msgpack_unpacker_cursor_read(cur, (char*)&b, 1);
         if (r) return r;
 
-        switch (b >> 4) {
-          case 0x0: case 0x1: case 0x2: case 0x3:
-          case 0x4: case 0x5: case 0x6: case 0x7:  // Positive Fixnum
-          case 0xe: case 0xf:  // Negative Fixnum
-            goto skip_value;
-          case 0x8:  // FixMap
-          case 0x9:  // FixArray
-          case 0xa: case 0xb:  // FixRaw
-            goto skip_rest;
-        }
-
         union msgpack_buffer_cast_block_t cb;
         switch(b) {
           case 0xca:  // float
@@ -1401,33 +1390,8 @@ int msgpack_unpacker_cursor_map_find_float(msgpack_unpacker_cursor_t* cur, size_
             if (cb.d == num) return 0;
             goto skip_value;
 
-          case 0xc0:  // nil
-          case 0xc2:  // false
-          case 0xc3:  // true
-            goto skip_value;
-
-          case 0xcc:  // unsigned int  8
-          case 0xcd:  // unsigned int 16
-          case 0xce:  // unsigned int 32
-          case 0xcf:  // unsigned int 64
-          case 0xd0:  // signed int  8
-          case 0xd1:  // signed int 16
-          case 0xd2:  // signed int 32
-          case 0xd3:  // signed int 64
-          case 0xd9:  // raw 8 / str 8
-          case 0xda:  // raw 16 / str 16
-          case 0xdb:  // raw 32 / str 32
-          case 0xc4:  // bin 8
-          case 0xc5:  // bin 16
-          case 0xc6:  // bin 32
-          case 0xdc:  // array 16
-          case 0xdd:  // array 32
-          case 0xde:  // map 16
-          case 0xdf:  // map 32
-            goto skip_rest;
-
           default:
-            return PRIMITIVE_INVALID_BYTE;
+            goto skip_rest;
         }
 skip_rest:
         r = msgpack_unpacker_cursor_skip_rest(cur, b);
@@ -1438,6 +1402,54 @@ skip_value:
     }
     return PRIMITIVE_OBJECT_COMPLETE;
 }
+
+int msgpack_unpacker_cursor_map_find_string(msgpack_unpacker_cursor_t* cur, size_t n, VALUE v)
+{
+    while (n--) {
+        unsigned char b;
+        int r = msgpack_unpacker_cursor_read(cur, (char*)&b, 1);
+        if (r) return r;
+
+        switch (b >> 4) {
+          case 0x0: case 0x1: case 0x2: case 0x3:
+          case 0x4: case 0x5: case 0x6: case 0x7:  // Positive Fixnum
+          case 0xe: case 0xf:  // Negative Fixnum
+            goto skip_value;
+          case 0x8:  // FixMap
+          case 0x9:  // FixArray
+            r = msgpack_unpacker_cursor_skip_bytes(cur, b&15);
+            goto skip_value;
+          case 0xa: case 0xb:  // FixRaw
+            r = cursor_memcmp(cursor, b&31, v);
+            goto skip_value;
+        }
+
+        switch (b) {
+          case 0xd9:  // raw 8 / str 8
+          case 0xc4:  // bin 8
+          case 0xda:  // raw 16 / str 16
+          case 0xc5:  // bin 16
+          case 0xdb:  // raw 32 / str 32
+          case 0xc6:  // bin 32
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 8);
+            if (r) return r;
+            r = cursor_memcmp(cur, cb.u64, v);
+            if (r) return r;
+            goto skip_value;
+
+          default:
+            goto skip_rest;
+        }
+        /* skip_rest: */
+        r = msgpack_unpacker_cursor_skip_rest(cur, b);
+        if (r) return r;
+skip_value:
+        r = msgpack_unpacker_cursor_skip_object(cur);
+        if (r) return r;
+    }
+    return PRIMITIVE_OBJECT_COMPLETE;
+}
+
 
 int msgpack_unpacker_cursor_read_map_header(msgpack_unpacker_cursor_t* cur, uint32_t* result_size)
 {
