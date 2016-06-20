@@ -191,17 +191,14 @@ static VALUE Unpacker_skip_nil(VALUE self)
     return Qfalse;
 }
 
-static VALUE Unpacker_dig(VALUE self)
+static VALUE Unpacker_dig(int argc, VALUE* argv, VALUE self)
 {
     UNPACKER(self, uk);
 
-#if 0
-int msgpack_unpacker_read_map_header(msgpack_unpacker_t* uk, uint32_t* result_size)
-int msgpack_unpacker_read_array_header(msgpack_unpacker_t* uk, uint32_t* result_size)
-int msgpack_unpacker_read(msgpack_unpacker_t* uk, size_t target_stack_depth)
-int msgpack_unpacker_skip(msgpack_unpacker_t* uk, size_t target_stack_depth)
-int msgpack_unpacker_peek_next_object_type(msgpack_unpacker_t* uk)
-#endif
+#if 1
+VALUE msgpack_unpacker_dig(msgpack_unpacker_t *uk, int argc, VALUE* argv);
+	return msgpack_unpacker_dig(uk, argc, argv);
+#else
     for (;;) {
 	uint32_t result_size;
 	int r = msgpack_unpacker_peek_next_object_type(uk);
@@ -242,8 +239,8 @@ int msgpack_unpacker_peek_next_object_type(msgpack_unpacker_t* uk)
 	    rb_raise(eUnpackError, "logically unknown type %d", r);
 	}
     }
-
     return Qnil;
+#endif
 }
 
 static VALUE Unpacker_read_array_header(VALUE self)
@@ -529,7 +526,7 @@ void MessagePack_Unpacker_module_init(VALUE mMessagePack)
     rb_define_alias(cMessagePack_Unpacker, "unpack", "read");
     rb_define_method(cMessagePack_Unpacker, "skip", Unpacker_skip, 0);
     rb_define_method(cMessagePack_Unpacker, "skip_nil", Unpacker_skip_nil, 0);
-    rb_define_method(cMessagePack_Unpacker, "dig", Unpacker_dig, 0);
+    rb_define_method(cMessagePack_Unpacker, "dig", Unpacker_dig, -1);
     rb_define_method(cMessagePack_Unpacker, "read_array_header", Unpacker_read_array_header, 0);
     rb_define_method(cMessagePack_Unpacker, "read_map_header", Unpacker_read_map_header, 0);
     //rb_define_method(cMessagePack_Unpacker, "peek_next_type", Unpacker_peek_next_type, 0);  // TODO

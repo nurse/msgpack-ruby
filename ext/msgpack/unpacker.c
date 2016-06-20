@@ -1085,6 +1085,117 @@ int msgpack_unpacker_cursor_skip_object(msgpack_unpacker_cursor_t* cur)
     return msgpack_unpacker_cursor_skip_rest(cur, b);
 }
 
+int msgpack_unpacker_cursor_read_object(msgpack_unpacker_cursor_t* cur)
+{
+    unsigned char head;
+    int r = msgpack_unpacker_cursor_read(cur, (char *)&head, 1);
+    if (r) return r;
+
+    size_t n;
+    union msgpack_buffer_cast_block_t cb;
+    switch (head >> 4) {
+      case 0x0: case 0x1: case 0x2: case 0x3:
+      case 0x4: case 0x5: case 0x6: case 0x7:  // Positive Fixnum
+      case 0xe: case 0xf:  // Negative Fixnum
+        return INT2FIX((char)head);
+
+      case 0x8:  // FixMap
+        n = head & 0xf;
+skip_map:
+        while (n--) {
+            r = msgpack_unpacker_cursor_skip_object(cur);
+            if (r) return r;
+            r = msgpack_unpacker_cursor_skip_object(cur);
+            if (r) return r;
+        }
+        return 0;
+
+      case 0x9:  // FixArray
+        n = head & 0xf;
+skip_array:
+        while (n--) {
+            r = msgpack_unpacker_cursor_skip_object(cur);
+            if (r) return r;
+        }
+        return 0;
+
+      case 0xa: case 0xb:  // FixRaw
+        return msgpack_unpacker_cursor_skip_bytes(cur, head&31);
+    }
+
+    switch(head) {
+      case 0xc0:  // nil
+        return Qnil;
+      case 0xc2:  // false
+        return Qfalse;
+      case 0xc3:  // true
+        return Qtrue;
+
+      case 0xcc:  // unsigned int  8
+      case 0xd0:  // signed int  8
+        return msgpack_unpacker_cursor_skip_bytes(cur, 1);
+
+      case 0xcd:  // unsigned int 16
+      case 0xd1:  // signed int 16
+        return msgpack_unpacker_cursor_skip_bytes(cur, 2);
+
+      case 0xce:  // unsigned int 32
+      case 0xd2:  // signed int 32
+      case 0xca:  // float
+        return msgpack_unpacker_cursor_skip_bytes(cur, 4);
+
+      case 0xcf:  // unsigned int 64
+      case 0xd3:  // signed int 64
+      case 0xcb:  // double
+        return msgpack_unpacker_cursor_skip_bytes(cur, 8);
+
+      case 0xd9:  // raw 8 / str 8
+      case 0xc4:  // bin 8
+        r = msgpack_unpacker_cursor_read(cur, cb.buffer, 1);
+        if (r) return r;
+        return msgpack_unpacker_cursor_skip_bytes(cur, _msgpack_be16(cb.u8));
+
+      case 0xda:  // raw 16 / str 16
+      case 0xc5:  // bin 16
+        r = msgpack_unpacker_cursor_read(cur, cb.buffer, 2);
+        if (r) return r;
+        return msgpack_unpacker_cursor_skip_bytes(cur, _msgpack_be16(cb.u16));
+
+      case 0xdb:  // raw 32 / str 32
+      case 0xc6:  // bin 32
+        r = msgpack_unpacker_cursor_read(cur, cb.buffer, 4);
+        if (r) return r;
+        return msgpack_unpacker_cursor_skip_bytes(cur, _msgpack_be16(cb.u32));
+
+      case 0xdc:  // array 16
+        r = msgpack_unpacker_cursor_read(cur, cb.buffer, 2);
+        if (r) return r;
+        n = cb.u16;
+        goto skip_array;
+
+      case 0xdd:  // array 32
+        r = msgpack_unpacker_cursor_read(cur, cb.buffer, 4);
+        if (r) return r;
+        n = cb.u32;
+        goto skip_array;
+
+      case 0xde:  // map 16
+        r = msgpack_unpacker_cursor_read(cur, cb.buffer, 2);
+        if (r) return r;
+        n = cb.u16;
+        goto skip_map;
+
+      case 0xdf:  // map 32
+        r = msgpack_unpacker_cursor_read(cur, cb.buffer, 4);
+        if (r) return r;
+        n = cb.u32;
+        goto skip_map;
+
+      default:
+        return PRIMITIVE_INVALID_BYTE;
+    }
+}
+
 int msgpack_unpacker_cursor_peek_next_object_type(msgpack_unpacker_cursor_t* cur)
 {
     unsigned char b;
@@ -1403,11 +1514,38 @@ skip_value:
     return PRIMITIVE_OBJECT_COMPLETE;
 }
 
+int cursor_bcmp(msgpack_unpacker_cursor_t* cur, uint32_t n, VALUE v)
+{
+    if ((int64_t)n != (int64_t)RSTRING_LEN(v)) return 1;
+    const char *p = RSTRING_PTR(v);
+    msgpack_buffer_chunk_t* c = &cur->chunk;
+    do {
+        int r;
+        // assert(c->last - c->first <= UINT32_MAX);
+        uint32_t avail = c->last - c->first;
+        if (avail >= n) {
+            r = memcmp(p, c->first, n);
+            if (r) return r;
+            cur->chunk.first = c->first + n;
+            if (&cur->chunk != c) {
+                cur->chunk.last = c->last;
+                cur->chunk.next = c->next;
+            }
+            return 0;
+        }
+        r = memcmp(p, c->first, avail);
+        if (r) return r;
+        p += avail;
+        n -= avail;
+    } while ((c = c->next));
+    return PRIMITIVE_EOF;
+}
 int msgpack_unpacker_cursor_map_find_string(msgpack_unpacker_cursor_t* cur, size_t n, VALUE v)
 {
     while (n--) {
         unsigned char b;
         int r = msgpack_unpacker_cursor_read(cur, (char*)&b, 1);
+        uint32_t sz;
         if (r) return r;
 
         switch (b >> 4) {
@@ -1420,27 +1558,37 @@ int msgpack_unpacker_cursor_map_find_string(msgpack_unpacker_cursor_t* cur, size
             r = msgpack_unpacker_cursor_skip_bytes(cur, b&15);
             goto skip_value;
           case 0xa: case 0xb:  // FixRaw
-            r = cursor_memcmp(cursor, b&31, v);
-            goto skip_value;
+            sz = b & 31;
+            goto compare_string;
         }
 
+        union msgpack_buffer_cast_block_t cb;
         switch (b) {
           case 0xd9:  // raw 8 / str 8
           case 0xc4:  // bin 8
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 1);
+            if (r) return r;
+            sz = cb.u8;
+            goto skip_value;
           case 0xda:  // raw 16 / str 16
           case 0xc5:  // bin 16
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 2);
+            if (r) return r;
+            sz = cb.u16;
+            goto skip_value;
           case 0xdb:  // raw 32 / str 32
           case 0xc6:  // bin 32
-            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 8);
+compare_string:
+            r = msgpack_unpacker_cursor_read(cur, cb.buffer, 4);
             if (r) return r;
-            r = cursor_memcmp(cur, cb.u64, v);
-            if (r) return r;
+            r = cursor_bcmp(cur, cb.u32, v);
+            if (r == 0) return 0;
             goto skip_value;
 
           default:
             goto skip_rest;
         }
-        /* skip_rest: */
+skip_rest:
         r = msgpack_unpacker_cursor_skip_rest(cur, b);
         if (r) return r;
 skip_value:
@@ -1450,7 +1598,6 @@ skip_value:
     return PRIMITIVE_OBJECT_COMPLETE;
 }
 
-
 int msgpack_unpacker_cursor_read_map_header(msgpack_unpacker_cursor_t* cur, uint32_t* result_size)
 {
     unsigned char b;
@@ -1458,13 +1605,13 @@ int msgpack_unpacker_cursor_read_map_header(msgpack_unpacker_cursor_t* cur, uint
     int r = msgpack_unpacker_cursor_read(cur, (char*)&b, 1);
     if (r) return r;
 
-    if(0x80 <= b && b <= 0x8f) {
+    if (0x80 <= b && b <= 0x8f) {
         *result_size = b & 0x0f;
-    } else if(b == 0xde) {
+    } else if (b == 0xde) {
         /* map 16 */
         if (msgpack_unpacker_cursor_read(cur, cb.buffer, 2)) return PRIMITIVE_EOF;
         *result_size = _msgpack_be16(cb.u16);
-    } else if(b == 0xdf) {
+    } else if (b == 0xdf) {
         /* map 32 */
         if (msgpack_unpacker_cursor_read(cur, cb.buffer, 4)) return PRIMITIVE_EOF;
         *result_size = _msgpack_be32(cb.u32);
@@ -1472,23 +1619,6 @@ int msgpack_unpacker_cursor_read_map_header(msgpack_unpacker_cursor_t* cur, uint
         return PRIMITIVE_UNEXPECTED_TYPE;
     }
     return 0;
-}
-
-static int get_type(VALUE v)
-{
-    switch(rb_type(v)) {
-      case T_NIL: return TYPE_NIL;
-      case T_TRUE: return TYPE_BOOLEAN;
-      case T_FALSE: return TYPE_BOOLEAN;
-      case T_FIXNUM: return TYPE_INTEGER;
-      case T_SYMBOL: return TYPE_RAW;
-      case T_STRING: return TYPE_RAW;
-      case T_ARRAY: return TYPE_ARRAY;
-      case T_HASH: return TYPE_MAP;
-      case T_BIGNUM: return TYPE_INTEGER;
-      case T_FLOAT: return TYPE_FLOAT;
-      default: return -1;
-    }
 }
 
 int msgpack_unpacker_cursor_map_seek_value_at(msgpack_unpacker_cursor_t* cur, VALUE v)
@@ -1507,19 +1637,31 @@ int msgpack_unpacker_cursor_map_seek_value_at(msgpack_unpacker_cursor_t* cur, VA
       case T_FIXNUM:
         return msgpack_unpacker_cursor_map_find_i64(cur, result_size, FIX2LONG(v));
       case T_SYMBOL:
-        TYPE_RAW;
+        return -1;
       case T_STRING:
-        TYPE_RAW;
+        return msgpack_unpacker_cursor_map_find_string(cur, result_size, v);
       case T_ARRAY:
-        TYPE_ARRAY;
+        return -1;
       case T_HASH:
-        TYPE_MAP;
+        return -1;
       case T_BIGNUM:
         return msgpack_unpacker_cursor_map_find_bignum(cur, result_size, v);
       case T_FLOAT:
         return msgpack_unpacker_cursor_map_find_float(cur, result_size, v);
       default:
-        -1;
+        return -1;
     }
     return 0;
+}
+
+VALUE msgpack_unpacker_dig(msgpack_unpacker_t *uk, int argc, VALUE* argv)
+{
+    msgpack_unpacker_cursor_t cursor;
+    msgpack_unpacker_cursor_t* cur = &cursor;
+    cursor_init(cur, uk);
+    
+    int r = msgpack_unpacker_cursor_map_seek_value_at(cur, argv[0]);
+    if (r == 0) {
+    }
+    return Qnil;
 }
